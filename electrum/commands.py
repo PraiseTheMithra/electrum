@@ -1137,11 +1137,11 @@ class Commands:
         } for p in lnworker.peers.values()]
 
     @command('wpnl')
-    async def open_channel(self, connection_string, amount, push_amount=0, password=None, wallet: Abstract_Wallet = None):
+    async def open_channel(self, connection_string, amount, push_amount=0, zeroconf=False, password=None, wallet: Abstract_Wallet = None):
         funding_sat = satoshis(amount)
         push_sat = satoshis(push_amount)
         peer = await wallet.lnworker.add_peer(connection_string)
-        chan = await wallet.lnworker.open_channel_with_peer(peer, funding_sat, push_sat, password)
+        chan = await wallet.lnworker.open_channel_with_peer(peer, funding_sat, push_sat, password, zeroconf=zeroconf)
         return chan.funding_outpoint.to_str()
 
     @command('')
@@ -1445,6 +1445,7 @@ command_options = {
     'force':       (None, "Create new address beyond gap limit, if no more addresses are available."),
     'pending':     (None, "Show only pending requests."),
     'push_amount': (None, 'Push initial amount (in BTC)'),
+    'zeroconf':    (None, 'request zeroconf channel'),
     'expired':     (None, "Show only expired requests."),
     'paid':        (None, "Show only paid requests."),
     'show_addresses': (None, "Show input and output addresses"),

@@ -1683,7 +1683,7 @@ class Channel(AbstractChannel):
         if conf < self.funding_txn_minimum_depth():
             #self.logger.info(f"funding tx is still not at sufficient depth. actual depth: {conf}")
             return False
-        assert conf > 0
+        #assert conf > 0
         # check funding_tx amount and script
         funding_tx = self.lnworker.lnwatcher.adb.get_transaction(funding_txid)
         if not funding_tx:

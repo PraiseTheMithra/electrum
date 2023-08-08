@@ -686,7 +686,8 @@ class Peer(Logger):
             funding_tx: 'PartialTransaction',
             funding_sat: int,
             push_msat: int,
-            temp_channel_id: bytes
+            temp_channel_id: bytes,
+            zeroconf: bool = False,
     ) -> Tuple[Channel, 'PartialTransaction']:
         """Implements the channel opening flow.
 
@@ -708,6 +709,8 @@ class Peer(Logger):
         open_channel_tlvs = {}
         assert self.their_features.supports(LnFeatures.OPTION_STATIC_REMOTEKEY_OPT)
         our_channel_type = ChannelType(ChannelType.OPTION_STATIC_REMOTEKEY)
+        if zeroconf:
+            our_channel_type |= ChannelType(ChannelType.OPTION_ZEROCONF)
         # We do not set the option_scid_alias bit in channel_type because LND rejects it.
         # Eclair accepts channel_type with that bit, but does not require it.
 
@@ -763,8 +766,8 @@ class Peer(Logger):
         self.logger.debug(f"received accept_channel for temp_channel_id={temp_channel_id.hex()}. {payload=}")
         remote_per_commitment_point = payload['first_per_commitment_point']
         funding_txn_minimum_depth = payload['minimum_depth']
-        if funding_txn_minimum_depth <= 0:
-            raise Exception(f"minimum depth too low, {funding_txn_minimum_depth}")
+        #if funding_txn_minimum_depth <= 0:
+        #    raise Exception(f"minimum depth too low, {funding_txn_minimum_depth}")
         if funding_txn_minimum_depth > 30:
             raise Exception(f"minimum depth too high, {funding_txn_minimum_depth}")
 
@@ -977,7 +980,13 @@ class Peer(Logger):
         )
         per_commitment_point_first = secret_to_pubkey(
             int.from_bytes(per_commitment_secret_first, 'big'))
-        min_depth = 3
+        if channel_type & channel_type.OPTION_ZEROCONF:
+            if not self.network.config.ZEROCONF_NODE.startswith(self.pubkey.hex()):
+                raise Exception(f"not accepting zeroconf from node {self.pubkey}")
+            min_depth = 0
+        else:
+            min_depth = 3
+
         accept_channel_tlvs = {
             'upfront_shutdown_script': {
                 'shutdown_scriptpubkey': local_config.upfront_shutdown_script
@@ -1395,8 +1404,11 @@ class Peer(Logger):
         if forwarding_enabled:
             # send channel_update of outgoing edge to peer,
             # so that channel can be used to to receive payments
-            self.logger.info(f"sending channel update for outgoing edge ({chan.get_id_for_log()})")
-            chan_upd = chan.get_outgoing_gossip_channel_update()
+            try:
+                chan_upd = chan.get_outgoing_gossip_channel_update()
+            except:
+                self.logger.info(f"cannot send channel update for outgoing edge ({chan.get_id_for_log()})")
+                return
             self.transport.send_bytes(chan_upd)
 
     def send_announcement_signatures(self, chan: Channel):

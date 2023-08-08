@@ -222,6 +222,7 @@ LNWALLET_FEATURES = (
     | LnFeatures.OPTION_CHANNEL_TYPE_OPT
     | LnFeatures.OPTION_SCID_ALIAS_OPT
     | LnFeatures.OPTION_SUPPORT_LARGE_CHANNEL_OPT
+    | LnFeatures.OPTION_ZEROCONF_OPT
 )
 
 LNGOSSIP_FEATURES = (
@@ -1216,7 +1217,7 @@ class LNWallet(LNWorker):
                 await self.network.try_broadcasting(force_close_tx, 'force-close')
 
     @log_exceptions
-    async def open_channel_with_peer(self, peer, funding_sat, push_sat, password):
+    async def open_channel_with_peer(self, peer, funding_sat, push_sat, password, zeroconf=False):
         coins = self.wallet.get_spendable_coins(None)
         node_id = peer.pubkey
         funding_tx = self.mktx_for_open_channel(
@@ -1229,6 +1230,7 @@ class LNWallet(LNWorker):
             funding_tx=funding_tx,
             funding_sat=funding_sat,
             push_sat=push_sat,
+            zeroconf=zeroconf,
             password=password)
         return chan
 
@@ -1239,12 +1241,14 @@ class LNWallet(LNWorker):
             funding_tx: PartialTransaction,
             funding_sat: int,
             push_sat: int,
+            zeroconf=False,
             password: Optional[str]) -> Tuple[Channel, PartialTransaction]:
 
         coro = peer.channel_establishment_flow(
             funding_tx=funding_tx,
             funding_sat=funding_sat,
             push_msat=push_sat * 1000,
+            zeroconf=zeroconf,
             temp_channel_id=os.urandom(32))
         chan, funding_tx = await util.wait_for2(coro, LN_P2P_NETWORK_TIMEOUT)
         util.trigger_callback('channels_updated', self.wallet)
