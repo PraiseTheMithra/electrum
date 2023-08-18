@@ -100,7 +100,8 @@ class StoredObject:
 
     def __setattr__(self, key, value):
         if self.db and key not in ['path', 'db'] and not key.startswith('_'):
-            self.db.add_patch({'op': 'replace', 'path': key_path(self.path, key), 'value': value})
+            if value != getattr(self, key):
+                self.db.add_patch({'op': 'replace', 'path': key_path(self.path, key), 'value': value})
         object.__setattr__(self, key, value)
 
     def set_db(self, db, path):
