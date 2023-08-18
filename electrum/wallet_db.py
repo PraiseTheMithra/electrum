@@ -241,6 +241,9 @@ class WalletDB(JsonDB):
         self._convert_version_53()
         self.put('seed_version', FINAL_SEED_VERSION)  # just to be sure
 
+        # self.data is not yet a StoredDict, so the changes we made are not in self.pending_changes
+        # thus, we need to write to disk
+        self._write()
         self._after_upgrade_tasks()
 
     def _after_upgrade_tasks(self):
