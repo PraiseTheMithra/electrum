@@ -36,7 +36,7 @@ import time
 import attr
 
 from . import util, bitcoin
-from .util import profiler, WalletFileException, multisig_type, TxMinedInfo, bfh
+from .util import profiler, WalletFileException, multisig_type, TxMinedInfo, bfh, MyEncoder
 from .invoices import Invoice, Request
 from .keystore import bip44_derivation
 from .transaction import Transaction, TxOutpoint, tx_from_any, PartialTransaction, PartialTxOutput
@@ -49,6 +49,11 @@ from .plugin import run_hook, plugin_loaders
 from .version import ELECTRUM_VERSION
 
 
+class WalletRequiresUpgrade(WalletFileException):
+    pass
+class WalletRequiresSplit(WalletFileException):
+    def __init__(self, split_data):
+        self._split_data = split_data
 
 # seed_version is now used for the version of the wallet file
 
@@ -100,46 +105,23 @@ for key in ['locked_in', 'fails', 'settles']:
     json_db.register_parent_key(key, lambda x: HTLCOwner(int(x)))
 
 
-class WalletDB(JsonDB):
 
-    def __init__(self, data, *, storage=None, manual_upgrades: bool):
-        JsonDB.__init__(self, data, storage)
-        if not data:
-            # create new DB
-            self.put('seed_version', FINAL_SEED_VERSION)
-            self._add_db_creation_metadata()
-            self._after_upgrade_tasks()
-        self._manual_upgrades = manual_upgrades
-        self._called_after_upgrade_tasks = False
-        if not self._manual_upgrades and self.requires_split():
-            raise WalletFileException("This wallet has multiple accounts and must be split")
-        if not self.requires_upgrade():
-            self._after_upgrade_tasks()
-        elif not self._manual_upgrades:
+class WalletDBUpgrader(Logger):
+
+    def __init__(self, data, *, upgrade: bool):
+        Logger.__init__(self)
+        self.data = data
+        if upgrade:
             self.upgrade()
-        # load plugins that are conditional on wallet type
-        self.load_plugins()
 
-    def load_data(self, s):
-        try:
-            JsonDB.load_data(self, s)
-        except Exception:
-            try:
-                d = ast.literal_eval(s)
-                labels = d.get('labels', {})
-            except Exception as e:
-                raise WalletFileException("Cannot read wallet file. (parsing failed)")
-            self.data = {}
-            for key, value in d.items():
-                try:
-                    json.dumps(key)
-                    json.dumps(value)
-                except Exception:
-                    self.logger.info(f'Failed to convert label to json format: {key}')
-                    continue
-                self.data[key] = value
-        if not isinstance(self.data, dict):
-            raise WalletFileException("Malformed wallet file (not dict)")
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def put(self, key, value):
+        if value is not None:
+            self.data[key] = value
+        else:
+            self.data.pop(key, None)
 
     def requires_split(self):
         d = self.get('accounts', {})
@@ -192,9 +174,6 @@ class WalletDB(JsonDB):
     @profiler
     def upgrade(self):
         self.logger.info('upgrading wallet format')
-        if self._called_after_upgrade_tasks:
-            # we need strict ordering between upgrade() and after_upgrade_tasks()
-            raise Exception("'after_upgrade_tasks' must NOT be called before 'upgrade'")
         self._convert_imported()
         self._convert_wallet_type()
         self._convert_account()
@@ -241,12 +220,6 @@ class WalletDB(JsonDB):
         self._convert_version_53()
         self._convert_version_54()
         self.put('seed_version', FINAL_SEED_VERSION)  # just to be sure
-
-        self._after_upgrade_tasks()
-
-    def _after_upgrade_tasks(self):
-        self._called_after_upgrade_tasks = True
-        self._load_transactions()
 
     def _convert_wallet_type(self):
         if not self._is_upgrade_method_needed(0, 13):
@@ -1140,7 +1113,6 @@ class WalletDB(JsonDB):
         else:
             return True
 
-    @locked
     def get_seed_version(self):
         seed_version = self.get('seed_version')
         if not seed_version:
@@ -1190,6 +1162,55 @@ class WalletDB(JsonDB):
             raise WalletFileExceptionVersion51(msg, should_report_crash=True)
         # generic exception
         raise WalletFileException(msg)
+
+
+class WalletDB(JsonDB):
+
+    def __init__(self, s, *, storage=None, upgrade=False):
+        self._upgrade = upgrade
+        JsonDB.__init__(self, s, storage, encoder=MyEncoder)
+        # create pointers
+        self.load_transactions()
+        # load plugins that are conditional on wallet type
+        self.load_plugins()
+
+    def load_data(self, s):
+        try:
+            data = JsonDB.load_data(self, s)
+        except Exception:
+            try:
+                d = ast.literal_eval(s)
+                labels = d.get('labels', {})
+            except Exception as e:
+                raise WalletFileException("Cannot read wallet file. (parsing failed)")
+            data = {}
+            for key, value in d.items():
+                try:
+                    json.dumps(key)
+                    json.dumps(value)
+                except Exception:
+                    self.logger.info(f'Failed to convert label to json format: {key}')
+                    continue
+                data[key] = value
+        if not isinstance(data, dict):
+            raise WalletFileException("Malformed wallet file (not dict)")
+
+        if len(data) == 0:
+            # create new DB
+            data['seed_version'] = FINAL_SEED_VERSION
+            #self._add_db_creation_metadata()
+
+        dbu = WalletDBUpgrader(data, upgrade=self._upgrade)
+        if dbu.requires_split():
+            raise WalletRequiresSplit(dbu.get_split_accounts())
+        if dbu.requires_upgrade():
+            raise WalletRequiresUpgrade()
+        return dbu.data
+
+
+    @locked
+    def get_seed_version(self):
+        return self.get('seed_version')
 
     def _add_db_creation_metadata(self):
         # store this for debugging purposes
@@ -1560,8 +1581,7 @@ class WalletDB(JsonDB):
                 self._addr_to_addr_index[addr] = (1, i)
 
     @profiler
-    def _load_transactions(self):
-        self.data = StoredDict(self.data, self, [])
+    def load_transactions(self):
         # references in self.data
         # TODO make all these private
         # txid -> address -> prev_outpoint -> value
@@ -1608,7 +1628,7 @@ class WalletDB(JsonDB):
         return True
 
     def is_ready_to_be_used_by_wallet(self):
-        return not self.requires_upgrade() and self._called_after_upgrade_tasks
+        return not self._requires_upgrade
 
     def split_accounts(self, root_path):
         from .storage import WalletStorage
@@ -1617,9 +1637,8 @@ class WalletDB(JsonDB):
         for data in result:
             path = root_path + '.' + data['suffix']
             storage = WalletStorage(path)
-            db = WalletDB(json.dumps(data), storage=storage, manual_upgrades=False)
-            db._called_after_upgrade_tasks = False
-            db.upgrade()
+            db = WalletDB(json.dumps(data), storage=storage, upgrade=True)
+            #db.upgrade()
             db.write()
             out.append(path)
         return out
