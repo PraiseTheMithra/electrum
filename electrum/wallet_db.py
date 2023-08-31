@@ -108,11 +108,9 @@ for key in ['locked_in', 'fails', 'settles']:
 
 class WalletDBUpgrader(Logger):
 
-    def __init__(self, data, *, upgrade: bool):
+    def __init__(self, data):
         Logger.__init__(self)
         self.data = data
-        if upgrade:
-            self.upgrade()
 
     def get(self, key, default=None):
         return self.data.get(key, default)
@@ -1198,11 +1196,19 @@ class WalletDB(JsonDB):
         if len(data) == 0:
             # create new DB
             data['seed_version'] = FINAL_SEED_VERSION
-            #self._add_db_creation_metadata()
+            # store this for debugging purposes
+            v = DBMetadata(
+                creation_timestamp=int(time.time()),
+                first_electrum_version_used=ELECTRUM_VERSION,
+            )
+            assert data.get("db_metadata", None) is None
+            data["db_metadata"] = v
 
-        dbu = WalletDBUpgrader(data, upgrade=self._upgrade)
+        dbu = WalletDBUpgrader(data)
         if dbu.requires_split():
             raise WalletRequiresSplit(dbu.get_split_accounts())
+        if self._upgrade:
+            dbu.upgrade()
         if dbu.requires_upgrade():
             raise WalletRequiresUpgrade()
         return dbu.data
@@ -1211,15 +1217,6 @@ class WalletDB(JsonDB):
     @locked
     def get_seed_version(self):
         return self.get('seed_version')
-
-    def _add_db_creation_metadata(self):
-        # store this for debugging purposes
-        v = DBMetadata(
-            creation_timestamp=int(time.time()),
-            first_electrum_version_used=ELECTRUM_VERSION,
-        )
-        assert self.get("db_metadata", None) is None
-        self.put("db_metadata", v)
 
     def get_db_metadata(self) -> Optional[DBMetadata]:
         # field only present for wallet files created with ver 4.4.0 or later
@@ -1629,19 +1626,6 @@ class WalletDB(JsonDB):
 
     def is_ready_to_be_used_by_wallet(self):
         return not self._requires_upgrade
-
-    def split_accounts(self, root_path):
-        from .storage import WalletStorage
-        out = []
-        result = self.get_split_accounts()
-        for data in result:
-            path = root_path + '.' + data['suffix']
-            storage = WalletStorage(path)
-            db = WalletDB(json.dumps(data), storage=storage, upgrade=True)
-            #db.upgrade()
-            db.write()
-            out.append(path)
-        return out
 
     def get_action(self):
         action = run_hook('get_action', self)
