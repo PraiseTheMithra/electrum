@@ -450,6 +450,24 @@ if [[ $1 == "watchtower" ]]; then
     wait_until_spent $ctx_id 1  # alice's to_local gets punished immediately
 fi
 
+if [[ $1 == "just_in_time" ]]; then
+    bob_node=$($bob nodeid)
+    $bob setconfig lightning_forward_payments true
+    $alice setconfig zeroconf_node $bob_node
+    $alice setconfig use_recoverable_channels false
+    wait_for_balance alice 1
+    wait_for_balance carol 1
+    echo "alice and carol open channel with bob"
+    $alice open_channel $bob_node 0.15 --password=''
+    $carol open_channel $bob_node 0.15 --password=''
+    new_blocks 3
+    wait_until_channel_open alice
+    wait_until_channel_open carol
+    echo "carol pays alice"
+    invoice=$($alice add_request 0.01 -m "invoice" | jq -r ".lightning_invoice")
+    $carol lnpay $invoice
+fi
+
 if [[ $1 == "unixsockets" ]]; then
     # This looks different because it has to run the entire daemon
     # Test domain socket behavior

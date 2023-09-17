@@ -1216,8 +1216,39 @@ class LNWallet(LNWorker):
                 self.logger.info('REBROADCASTING CLOSING TX')
                 await self.network.try_broadcasting(force_close_tx, 'force-close')
 
+    def get_peer_by_jit_alias(self, scid_alias):
+        for nodeid, peer in self.peers.items():
+            if scid_alias == self._jit_alias(nodeid):
+                return peer
+
+    def _jit_alias(self, nodeid):
+        # just-in-time alias. implicit.
+        return sha256(nodeid)[0:8]
+
+    def get_scid_alias(self):
+        return self._jit_alias(self.node_keypair.pubkey)
+
     @log_exceptions
-    async def open_channel_with_peer(self, peer, funding_sat, push_sat, password, zeroconf=False):
+    async def open_just_in_time_channel(self, next_peer, next_amount_msat_htlc, next_cltv_expiry, payment_hash, processed_onion):
+        funding_sat = 2 * (next_amount_msat_htlc // 1000) # try to fully spend htlcs
+        password = self.wallet.get_unlocked_password() if self.wallet.has_password() else None
+        channel_opening_fee = 5000 * 1000
+        next_chan = await self.open_channel_with_peer(next_peer, funding_sat, 0, password, zeroconf=True, opening_fee=channel_opening_fee)
+        # need to set the scid alias
+        # send opening_fee as tlv
+        self.logger.info(f'jit open ok')
+        # wait until chan ready
+        while not next_chan.is_open():
+            await asyncio.sleep(1)
+
+        next_amount_msat_htlc -= channel_opening_fee
+        # fixme: some checks are missing
+        next_peer.forward_htlc(next_chan, payment_hash, next_amount_msat_htlc, next_cltv_expiry, processed_onion)
+        self.logger.info(f'jit forwarded ok')
+        return next_chan
+
+    @log_exceptions
+    async def open_channel_with_peer(self, peer, funding_sat, push_sat, password, zeroconf=False, opening_fee=None):
         coins = self.wallet.get_spendable_coins(None)
         node_id = peer.pubkey
         funding_tx = self.mktx_for_open_channel(
@@ -1231,6 +1262,7 @@ class LNWallet(LNWorker):
             funding_sat=funding_sat,
             push_sat=push_sat,
             zeroconf=zeroconf,
+            opening_fee=opening_fee,
             password=password)
         return chan
 
@@ -1242,6 +1274,7 @@ class LNWallet(LNWorker):
             funding_sat: int,
             push_sat: int,
             zeroconf=False,
+            opening_fee=None,
             password: Optional[str]) -> Tuple[Channel, PartialTransaction]:
 
         coro = peer.channel_establishment_flow(
@@ -1249,6 +1282,7 @@ class LNWallet(LNWorker):
             funding_sat=funding_sat,
             push_msat=push_sat * 1000,
             zeroconf=zeroconf,
+            opening_fee=opening_fee,
             temp_channel_id=os.urandom(32))
         chan, funding_tx = await util.wait_for2(coro, LN_P2P_NETWORK_TIMEOUT)
         util.trigger_callback('channels_updated', self.wallet)
@@ -1356,6 +1390,8 @@ class LNWallet(LNWorker):
             if chan.short_channel_id == short_channel_id:
                 return chan
             if chan.get_remote_scid_alias() == short_channel_id:
+                return chan
+            if chan.get_local_scid_alias() == short_channel_id:
                 return chan
 
     def can_pay_invoice(self, invoice: Invoice) -> bool:
@@ -2359,7 +2395,8 @@ class LNWallet(LNWorker):
         scid_to_my_channels = {chan.short_channel_id: chan for chan in channels
                                if chan.short_channel_id is not None}
         for chan in channels:
-            alias_or_scid = chan.get_remote_scid_alias() or chan.short_channel_id
+            #alias_or_scid = chan.get_remote_scid_alias() or chan.short_channel_id
+            alias_or_scid = self.get_scid_alias()
             assert isinstance(alias_or_scid, bytes), alias_or_scid
             channel_info = get_mychannel_info(chan.short_channel_id, scid_to_my_channels)
             # note: as a fallback, if we don't have a channel update for the

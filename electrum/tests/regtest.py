@@ -80,3 +80,6 @@ class TestLightningABC(TestLightning):
 
     def test_watchtower(self):
         self.run_shell(['watchtower'])
+
+    def test_just_in_time(self):
+        self.run_shell(['just_in_time'])
